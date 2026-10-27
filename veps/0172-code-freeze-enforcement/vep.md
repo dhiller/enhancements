@@ -1,382 +1,392 @@
-# VEP #172: Code Freeze Enforcement via Tide Configuration
+# VEP #172: Selective Code Freeze Enforcement via Tide Configuration
 
 ## Release Signoff Checklist
 
 Items marked with (R) are required *prior to targeting to a milestone / release*.
 
-- [ ] (R) Enhancement issue created, which links to VEP dir in [kubevirt/enhancements] (not the initial VEP PR)
+- [ ] (R) Enhancement issue created, which links to VEP dir in
+  [kubevirt/enhancements](https://github.com/kubevirt/enhancements) (not the initial VEP PR)
 - [ ] (R) Target version is explicitly mentioned and approved
 - [ ] (R) Graduation criteria filled
 
 ## Overview
 
-This VEP proposes a mechanism to technically enforce code freeze in the `kubevirt/kubevirt` repository by
-requiring the `approved-vep` label for merging PRs into the `main` branch during the freeze period. The
-approach adapts the proven Kubernetes code freeze enforcement strategy, which modifies the Tide merge query
-configuration to gate merging on a milestone (in our case, the `approved-vep` label).
+This VEP codifies a selective code freeze for `kubevirt/kubevirt`: during the freeze, Tide requires a
+specific set of labels for merging PRs into `main`. Eligible work includes tracked enhancements,
+critical-urgent bug fixes, and critical-urgent flake fixes. Release branches are not subject to this gate.
 
-Today, KubeVirt's code freeze is a process-driven agreement: contributors are expected to respect the freeze,
-but nothing prevents a non-VEP PR from being merged. This VEP closes that gap by making the freeze technically
-enforceable through Prow's Tide component.
+The core mechanism has already been implemented in `kubevirt/project-infra`. This draft describes the
+[merged configuration as of October 27, 2026][tide-config], reconciles the proposal with that implementation,
+and identifies remaining process decisions. Merged configuration is not independent confirmation of the
+configuration currently loaded in the Prow cluster.
 
 ## Motivation
 
-The KubeVirt community has established a VEP process
-([kubevirt/enhancements](https://github.com/kubevirt/enhancements)) and an `approved-vep` label to indicate
-that a PR is tied to an approved, tracked enhancement for the current release. However, the code freeze is
-currently only enforced by convention:
+Before technical enforcement, code freeze relied on reviewers and approvers policing release eligibility.
+That was error-prone under release pressure and difficult for first-time or occasional contributors to
+discover. A documented Tide policy makes the process explicit and consistently enforces merge eligibility.
 
-- There is no technical mechanism preventing PRs without `approved-vep` from being merged during code freeze.
-- Reviewers and approvers must manually check whether a PR should be merged, which is error-prone under time
-  pressure near a release.
-- Non-VEP PRs that slip through during code freeze can destabilize the release and dilute the community's
-  focus on prioritized work.
-
-Kubernetes has solved the same problem for over a decade using a simple, battle-tested approach: modifying the
-Tide configuration to require a milestone on PRs targeting frozen branches. KubeVirt can adapt this pattern
-using the existing `approved-vep` label instead of a milestone.
+The freeze concentrates CI and review bandwidth on tracked release work and release stabilization without
+blocking critical fixes. Keeping `main` selective until release branching can also reduce the need to
+review and test the same change on both `main` and a release branch during that interval.
 
 ## Goals
 
-- Technically enforce code freeze by preventing PRs without the `approved-vep` label from merging into `main`
-  during the freeze period.
-- Provide a clear, auditable mechanism (a config PR to `kubevirt/project-infra`) to activate and deactivate
-  the freeze.
-- Provide an exception path for critical bug fixes during the freeze.
-- Align with the existing VEP process and `approved-vep` label automation without requiring changes to either.
+- Document and enforce the implemented label-based eligibility rules for `main` during code freeze.
+- Provide an auditable config-PR mechanism for freeze activation and code thaw.
+- Preserve dedicated paths for tracked enhancements and critical bug/flake fixes.
+- Explain release timing, label recovery, exception requests, and release-team responsibilities.
+- Distinguish implemented behavior from process improvements that still require agreement.
 
 ## Non Goals
 
-- Changing the VEP process itself (proposal, review, approval flow).
-- Changing how the `approved-vep` label is assigned (the existing GitHub Actions automation and restricted
-  label access remain as-is).
-- Enforcing enhancement freeze (the deadline for VEP proposals). Enhancement freeze remains a process-driven
-  checkpoint managed by SIGs and the release team.
-- Blocking merges on release branches. Release branches have their own cherry-pick workflows and are not
-  subject to the code freeze gate proposed here.
-- Replacing the exception process. Exceptions continue to follow the existing
-  [kubevirt-dev mailing list process](https://groups.google.com/forum/#!forum/kubevirt-dev).
+- Changing VEP proposal, review, approval, or enhancement-freeze deadlines.
+- Replacing the existing [exception-request process][exceptions].
+- Blocking release branches or other repositories through this freeze policy.
+- Changing label automation or introducing milestone-based gating as part of the baseline implementation.
+- Stopping PR review or presubmit testing for work that cannot merge during the freeze.
+- Replacing normal CI, review, DCO, or blocking-label requirements.
 
 ## Definition of Users
 
-- **Release team**: Activates and deactivates the code freeze by submitting config PRs. Grants exceptions by
-  applying the `approved-vep` or `freeze-exception` label to critical PRs.
-- **VEP owners / contributors**: Their PRs that reference tracked VEPs already receive `approved-vep`
-  automatically and are unaffected by the freeze.
-- **General contributors**: Their non-VEP PRs (refactoring, minor fixes, new features without a VEP) are
-  blocked from merging during the freeze period. They can request an exception from the release team.
-- **Reviewers and approvers**: Freed from manually policing the freeze, they can focus on reviewing
-  prioritized VEP work.
+- **Release team**: Publishes the schedule, coordinates exception decisions with maintainers and SIGs,
+  submits freeze/thaw config PRs, and verifies the deployed behavior.
+- **VEP owners / contributors**: Reference tracked enhancement issues, monitor labeling, and request
+  extensions when required by the enhancement process. A matching label does not itself grant an extension.
+- **General contributors**: Can continue development and review, but need an eligible route to merge
+  into frozen `main`; ordinary work waits for thaw.
+- **Reviewers and approvers**: Assess correctness and release suitability, including whether critical
+  classifications are justified. Tide checks labels, not the rationale for applying them.
+- **Restricted-label team**: Members of `restricted-labels-kubevirt` can use Prow's manual
+  `/label approved-vep` command to recover a missing label on genuinely tracked enhancement work.
 
 ## User Stories
 
-- As a **release team member**, I want to activate code freeze with a single config PR so that only
-  VEP-backed PRs can merge, without having to manually monitor every PR.
-- As a **VEP owner**, I want my PRs to merge normally during code freeze because they are already labeled
-  `approved-vep`, so the freeze is transparent to me.
-- As a **contributor** with a critical bug fix during code freeze, I want a clear exception process so that
-  my fix is not blocked unnecessarily.
-- As a **reviewer**, I want to trust that only release-appropriate PRs are mergeable during code freeze,
-  so I can focus my review bandwidth on prioritized work.
+- As a **release team member**, I want a small, reviewable config change to activate or lift the freeze.
+- As a **VEP owner**, I want eligible enhancement work to remain mergeable while understanding that
+  technical eligibility does not replace release-process approval or an extension.
+- As a **contributor**, I want to understand why my PR is blocked and how to request an exception or
+  correct a missing label.
+- As a **maintainer**, I want critical bug and flake fixes to merge without mislabeling them as VEP work.
+- As a **reviewer**, I want a clear distinction between merge eligibility and merge priority.
 
 ## Repos
 
-- [kubevirt/project-infra](https://github.com/kubevirt/project-infra) - Prow/Tide configuration changes
-  (primary)
-- [kubevirt/sig-release](https://github.com/kubevirt/sig-release) - Release tracker template updates to
-  include freeze activation/deactivation steps
-- [kubevirt/enhancements](https://github.com/kubevirt/enhancements) - This VEP (documentation only)
+- [kubevirt/project-infra](https://github.com/kubevirt/project-infra): Implemented Tide queries and
+  freeze/thaw switch; follow-up configuration changes only if additional policy is agreed.
+- [kubevirt/sig-release](https://github.com/kubevirt/sig-release): Release schedules and follow-up tracker
+  updates for the checklist described below.
+- [kubevirt/enhancements](https://github.com/kubevirt/enhancements): This VEP and existing enhancement policy;
+  follow-up alignment where current exception/deadline wording needs clarification.
+- [kubevirt/community](https://github.com/kubevirt/community): Follow-up contributor-guide documentation.
+- [kubevirt/kubevirt](https://github.com/kubevirt/kubevirt): Existing approved-VEP labeling automation;
+  changes only if a separate automation or milestone proposal is adopted.
 
 ## Design
 
-### How Kubernetes Does It
+### Implemented Merge Eligibility
 
-Kubernetes enforces code freeze by modifying the Tide query for `kubernetes/kubernetes` in
-`kubernetes/test-infra`. The single Tide query is split into two:
+Tide queries are alternative admission routes: labels within a query are required together, but a PR
+does not need to satisfy every query. During freeze, the ordinary `kubevirt/kubevirt` query excludes `main`.
+The [dedicated queries][tide-config] permit the following:
 
-1. A **frozen query** for `master` and the release branch that requires the `milestone: vX.Y` field,
-   meaning only PRs assigned to the release milestone can merge.
-2. An **unfrozen query** for all other branches with no milestone requirement.
+| Target                            | Required labels                                              | Purpose                                    |
+|-----------------------------------|--------------------------------------------------------------|--------------------------------------------|
+| `main`                            | `lgtm`, `approved`, `approved-vep`                           | Tracked enhancement work                   |
+| `main`                            | `lgtm`, `approved`, `kind/bug`, `priority/critical-urgent`   | Critical bug fixes                         |
+| `main`                            | `lgtm`, `approved`, `kind/flake`, `priority/critical-urgent` | Critical flake fixes                       |
+| Any branch except `main`          | `lgtm`, `approved`                                           | Ordinary merging outside the frozen branch |
+| Any branch, author `kubevirt-bot` | `skip-review`                                                | Existing trusted automation route          |
 
-At code thaw, the split is reverted to a single query. Only members of the `milestone-maintainers`
-GitHub team can assign milestones, providing access control.
+The first four routes exclude PRs with any of these labels:
 
-### Adapting for KubeVirt
-
-KubeVirt does not use GitHub milestones for release tracking. Instead, it uses the `approved-vep` label,
-which is already:
-
-- Automatically applied/removed by GitHub Actions based on the project board status
-- Restricted so only the `restricted-labels-kubevirt` team can manually apply it via `/label approved-vep`
-
-The proposed approach uses `approved-vep` as the merge gate instead of a milestone, achieving the same
-effect with existing infrastructure.
-
-### Current Tide Configuration
-
-The current Tide query for `kubevirt/kubevirt` (in `kubevirt/project-infra`) is:
-
-```yaml
-tide:
-  queries:
-  - repos:
-    - kubevirt/kubevirt
-    # ... other repos in the same query ...
-    labels:
-    - lgtm
-    - approved
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
-    - do-not-merge/release-note-label-needed
-    - do-not-merge/invalid-commit-message
-    - needs-rebase
-    - "dco-signoff: no"
+```text
+do-not-merge
+do-not-merge/hold
+do-not-merge/invalid-owners-file
+do-not-merge/work-in-progress
+do-not-merge/release-note-label-needed
+do-not-merge/invalid-commit-message
+needs-rebase
+dco-signoff: no
 ```
 
-### Proposed Change: Activating Code Freeze
+The bot route has the same exclusions except `do-not-merge/release-note-label-needed`. It does not require
+`lgtm` or `approved` in its query. `skip-review` alone is not a human-authored PR exemption: the author
+restriction is essential. Required CI checks still apply to eligible PRs.
 
-At code freeze, the release team submits a PR to `kubevirt/project-infra` that extracts
-`kubevirt/kubevirt` from the shared query and splits it into dedicated queries:
+Neither `kind/bug`, `kind/flake`, nor `priority/critical-urgent` alone grants freeze admission. Other
+repositories and release branches retain their own merge requirements.
 
-```yaml
-tide:
-  queries:
-  # ---- CODE FREEZE: kubevirt/kubevirt main branch ----
-  # Only PRs with approved-vep can merge during freeze.
-  - repos:
-    - kubevirt/kubevirt
-    includedBranches:
-    - main
-    labels:
-    - lgtm
-    - approved
-    - approved-vep
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
-    - do-not-merge/release-note-label-needed
-    - do-not-merge/invalid-commit-message
-    - needs-rebase
-    - "dco-signoff: no"
+### Freeze Activation and Code Thaw
 
-  # ---- CODE FREEZE: kubevirt/kubevirt other branches ----
-  # Release branches and others are not frozen.
-  - repos:
-    - kubevirt/kubevirt
-    excludedBranches:
-    - main
-    labels:
-    - lgtm
-    - approved
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
-    - do-not-merge/release-note-label-needed
-    - do-not-merge/invalid-commit-message
-    - needs-rebase
-    - "dco-signoff: no"
-
-  # ---- Remaining repos (unchanged) ----
-  - repos:
-    - kubevirt/containerdisks
-    - kubevirt/containerized-data-importer
-    # ... all other repos that were in the original query ...
-    labels:
-    - lgtm
-    - approved
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
-    - do-not-merge/release-note-label-needed
-    - do-not-merge/invalid-commit-message
-    - needs-rebase
-    - "dco-signoff: no"
-```
-
-**Effect**: PRs against `main` without the `approved-vep` label will show a Tide status of
-"Not mergeable" and cannot be merged by Tide. PRs that already have `approved-vep` (because they
-reference a tracked VEP) merge normally.
-
-### Proposed Change: Deactivating Code Freeze (Code Thaw)
-
-At code thaw, the release team submits a revert PR that collapses the split queries back into the
-original shared query. This is a straightforward `git revert` of the freeze PR.
-
-### Exception Handling
-
-During code freeze, critical bug fixes that are not tied to a VEP need an exception path:
-
-**Option 1 (Simple)**: The release team manually applies `approved-vep` to the exception PR using
-`/label approved-vep`. This works because the label is already restricted to the
-`restricted-labels-kubevirt` team. However, it overloads the meaning of `approved-vep` since the PR
-is not actually VEP-backed.
-
-**Option 2 (Recommended)**: Introduce a separate `freeze-exception` label and add a second frozen
-query that accepts it:
+The dedicated queries remain configured across release cycles. Activation does not require extracting
+the repository from a shared query again. The release team submits a PR enabling the following exclusion
+on the ordinary query, as in [project-infra#5529][freeze-110]:
 
 ```yaml
-  # ---- CODE FREEZE: exception PRs ----
-  - repos:
-    - kubevirt/kubevirt
-    includedBranches:
-    - main
-    labels:
-    - lgtm
-    - approved
-    - freeze-exception
-    missingLabels:
-    - do-not-merge
-    - do-not-merge/hold
-    - do-not-merge/invalid-owners-file
-    - do-not-merge/work-in-progress
-    - do-not-merge/release-note-label-needed
-    - do-not-merge/invalid-commit-message
-    - needs-rebase
-    - "dco-signoff: no"
+# Fragment of the ordinary kubevirt/kubevirt query; other fields remain unchanged.
+repos:
+  - kubevirt/kubevirt
+excludedBranches:
+  - main
+labels:
+  - lgtm
+  - approved
 ```
 
-The `freeze-exception` label would be restricted to the same team (`restricted-labels-kubevirt`) and
-added to the labels configuration in `kubevirt/project-infra`. This keeps `approved-vep` semantically
-clean: it always means "tied to a tracked VEP."
+For thaw, remove or comment out `excludedBranches` on this query, allowing the ordinary route to match
+`main` again. Keep the dedicated enhancement and critical-fix queries. The [v1.9 thaw][thaw-19] used this
+approach; the [v1.10 thaw PR][thaw-110] is still unmerged as of this draft's snapshot.
+
+Do not blindly revert all changes made during the freeze: later fixes, such as critical-flake admission,
+must not be lost. Also check that no other broad query admits ordinary `main` PRs while freeze is active.
+
+Merged config is deployed through the existing [config-updater mapping][config-updater]. Tide's configured
+sync period is two minutes, but deployment and reconciliation take time; this is not a guaranteed
+two-minute activation deadline. Verify behavior before announcing activation or thaw as complete.
+
+### Release Timing and Branching
+
+Each release schedule must state enhancement freeze, code freeze, expected thaw, branching, and RC dates.
+The [v1.10 schedule][schedule-110] plans code freeze for October 21 and thaw for October 28, 2026: a
+one-week planned interval, not a universal duration. The activation config actually merged on October 22;
+record actual activation separately from scheduled dates. An open thaw PR is not evidence of completed thaw.
+
+The v1.10 schedule groups release-branch creation, `rc.0`, and restored normal merging at the thaw milestone.
+This VEP proposes making the operational ordering explicit: create and verify the release branch and its
+required CI configuration before lifting the gate on `main`. The release team should record the branch
+point and RC tag, then verify thaw. This ordering is a proposed checklist requirement, not a claim that
+the schedule already specifies it precisely.
+
+The generic [release tracker][release-tracker] still places branching and `rc.0` under Code Freeze and
+has no separate thaw milestone. Align it with the release-specific schedule rather than maintaining
+conflicting instructions.
+
+Existing [enhancement policy][exceptions] requires exception requests for work continuing past the relevant
+deadlines. VEP approval and tracking should be established before freeze; late approval or unfinished work
+still follows that process. Tide only sees the resulting labels: it does not check approval dates,
+extension decisions, or exception expiry. The final relationship between the approved-VEP admission route
+and extension requirements must be agreed and reflected in the enhancement documentation.
+
+Reviewers also proposed delaying branching further, potentially branching from a selected/promoted RC to
+reduce duplicate CI and backport reviews. The frozen-`main` interval reduces that duplication before the
+branch is cut, but the broader RC-based model is deferred. It is not part of the documented v1.10 procedure,
+which creates the branch at thaw and tags RCs and GA on the release branch. Adopting a different branch
+point requires a separate release-procedure decision and CI/backport plan before changing thaw prerequisites.
+
+### Merge Priority Is Not Admission
+
+The [current priority order][tide-priority] is:
+
+1. `kind/flake` and `priority/critical-urgent`
+2. `kind/failing-test` and `priority/critical-urgent`
+3. `kind/bug` and `priority/critical-urgent`
+4. `approved-vep`
+
+Priority orders work already eligible to merge; it does not grant freeze admission. In particular,
+`kind/failing-test` plus critical urgency has no independent freeze query. Such a PR needs another valid
+route. Adding a failing-test route would be a policy/configuration change, not documentation of current behavior.
+
+Prioritizing VEPs without blocking ordinary work was proposed in review. Priority alone does not exclude
+non-release work during freeze, so this VEP retains selective admission as well as the existing priority
+ordering. Outside freeze, ordinary PRs can merge while these priorities remain configured. An independent
+VEP merge pool was proposed in [project-infra#5193][merge-pool] but closed unmerged; it is not implemented.
+
+### Label Assignment and Recovery
+
+The existing [workflow][vep-workflow] runs on PR `opened`, `edited`, `reopened`, and `synchronize` events.
+Its [script][vep-script] checks PR-body enhancement issue references against organization project 22,
+accepting issues with status `Tracked` or `At risk`, and adds/removes `approved-vep`. Link the enhancement
+tracking issue, not just the VEP design PR. Tide trusts this label; it does not independently consult the board.
+
+For a missing or unexpected label:
+
+1. Check the PR-body tracking-issue reference, project membership/status, and workflow result.
+2. Correct the reference or board entry through the owning SIG/release team and re-evaluate labeling on a
+   supported PR event. Board changes alone do not trigger this workflow.
+3. If automation is incorrect or unavailable, ask a `restricted-labels-kubevirt` member to assess whether
+   `/label approved-vep` is justified for genuinely tracked work; not every approver belongs to that team.
+4. Fix the underlying mismatch: later automation can undo a manual label change. Do not use this recovery
+   path to misclassify unrelated fixes as enhancement work.
+
+The [Prow restriction][restricted-labels] applies to manual label commands, not all GitHub UI/API access.
+The critical-priority, bug, and flake labels are not restricted to the release team by this configuration.
+Neither the presence of those labels nor a successful Tide query proves release-team exception approval.
+
+### Exception Handling and Remaining Decisions
+
+Use the existing [kubevirt-dev exception process][exceptions], including justification, additional time
+needed, and impact if denied. This VEP proposes linking the request and decision from the affected PR and
+recording the deciding maintainers, owning SIG, release-team coordination, and any deadline or scope limit.
+The approval authority/quorum and handling of expired exceptions still require explicit agreement.
+
+Critical bug and flake fixes use their implemented routes after the appropriate review and classification;
+they do not need `approved-vep`. For other exceptions, approval on the mailing list alone cannot satisfy
+Tide. There is currently no generic `freeze-exception` query. Do not add unrelated labels merely to bypass
+the gate. Agree a technical route before promising that an otherwise ineligible exception can merge.
+
+Before this VEP is accepted, resolve and document:
+
+- Which enhancement work requires an extension despite satisfying the approved-VEP query, and who grants it.
+- Who authorizes critical classifications and other exceptions, and whether Prow label restrictions need
+  strengthening to match that authority.
+- Whether a restricted `freeze-exception` route is needed for exceptional work outside existing routes.
+- Whether critical failing-test fixes need their own admission route or intentionally use another route.
+- Whether release milestones should provide historical attribution, replace labels as the gate, or remain deferred.
 
 ### Release Team Checklist Integration
 
-The release tracker template in `kubevirt/sig-release` should be updated with:
+Apply this proposed checklist to `kubevirt/sig-release` in a follow-up change:
 
 ```markdown
 ### Code Freeze
-- [ ] Submit PR to `kubevirt/project-infra` splitting the Tide query for `kubevirt/kubevirt`
-      to require `approved-vep` on `main` branch
-- [ ] Announce code freeze on kubevirt-dev mailing list
-- [ ] Monitor exception requests
+- [ ] Publish the freeze/thaw window and eligibility/exception instructions.
+- [ ] Confirm enhancement tracking and coordinate required extensions with owning SIGs.
+- [ ] Enable the ordinary Tide query's main exclusion through a project-infra PR.
+- [ ] Validate deployment and the eligibility matrix; record actual activation and announce freeze.
+- [ ] Monitor critical fixes, labeling failures, and linked exception requests/decisions.
 
 ### Code Thaw
-- [ ] Revert the code freeze PR in `kubevirt/project-infra`
-- [ ] Announce code thaw on kubevirt-dev mailing list
+- [ ] Confirm the release branch point and create/verify the branch and its CI configuration.
+- [ ] Record the release branch and rc.0 tag according to the release schedule.
+- [ ] Remove/comment the ordinary query's main exclusion without reverting intervening policy fixes.
+- [ ] Verify deployment, ordinary main eligibility, and unchanged release-branch behavior.
+- [ ] Record actual thaw, announce it, and collect process feedback.
 ```
+
+Contributor documentation should link this policy and the exception process, explain how to diagnose
+blocked Tide eligibility, and state that contributors can continue development/review while waiting for thaw.
+It should not promise that an admission label alone guarantees merging or release inclusion.
 
 ## API Examples
 
-Not applicable. This VEP modifies CI/CD configuration (Prow/Tide YAML), not KubeVirt's API.
-
-See the [Design](#design) section for the exact YAML configuration changes.
+Not applicable. This VEP concerns release procedure and Prow/Tide configuration, not the KubeVirt API.
+The activation fragment above illustrates the switch; the linked source is authoritative for full queries.
 
 ## Alternatives
 
-### Alternative 1: `require-matching-label` Prow Plugin
+### Release Milestones
 
-Configure the `require-matching-label` plugin to automatically add a `do-not-merge/needs-approved-vep`
-label to PRs that lack `approved-vep`:
+Reviewers proposed creating a milestone at the start of each release and adapting approved-VEP automation
+to assign it instead of the label. A milestone preserves a PR's target-release attribution when viewed later,
+whereas the current generic label does not identify a specific release.
 
-```yaml
-require_matching_label:
-- missing_label: do-not-merge/needs-approved-vep
-  org: kubevirt
-  repo: kubevirt
-  branch: main
-  prs: true
-  regexp: ^approved-vep$
-  missing_comment: |
-    This PR is missing the `approved-vep` label. During code freeze,
-    only PRs tied to an approved VEP can merge.
-```
+The baseline retains the deployed label gate. Before switching to milestone-based admission, define
+milestone creation, assignment/removal rules, permissions, current-release selection, critical-fix and bot
+routes, and migration of existing PRs. A milestone must represent current eligibility, not merely a stale
+historical target. This requires automation changes and explicit Tide query validation.
 
-**Why not chosen**: This approach requires both a plugin config change and adding the new
-`do-not-merge/*` label to Tide's `missingLabels` list. It has more moving parts than a simple Tide
-query split, and still requires config changes to activate/deactivate. The Tide query approach is
-simpler, proven, and maps directly to the Kubernetes pattern.
+An alternative is to keep labels for admission and use milestones only for release attribution. In that
+case, define who assigns them and retain historical attribution rather than removing it when eligibility
+changes. Do not claim either milestone approach is implemented; selection remains a review decision.
 
-### Alternative 2: `tide/merge-blocker` Label
+### A Dedicated Freeze-Exception Label
 
-Open a GitHub issue with the `tide/merge-blocker` label to block all merges during code freeze.
+A restricted `freeze-exception` query would preserve the meaning of `approved-vep` while admitting other
+approved exceptions. It requires a label definition, command restrictions, a query, and governance for
+assignment and expiry. It is not required to reproduce the deployed bug/flake routes and is not implemented.
 
-**Why not chosen**: This is a blunt instrument that blocks *all* PRs, including VEP-backed ones.
-It would require manually removing the blocker for each approved PR or not using it at all, defeating
-the purpose.
+### Priority Without a Freeze Gate
 
-### Alternative 3: Manual Enforcement
+VEP priority is already configured, but allowing all ordinary PRs would no longer enforce a selective freeze.
+Retain priority outside freeze and combine it with admission rules during freeze.
 
-Continue with the current process-driven approach where reviewers and approvers manually police the
-freeze.
+### Other Enforcement Mechanisms
 
-**Why not chosen**: This is error-prone, places undue burden on reviewers, and does not scale. The
-whole point of this VEP is to replace manual enforcement with a technical one.
-
-### Alternative 4: GitHub Branch Protection Rules
-
-Use GitHub branch protection to require the `approved-vep` label before merging.
-
-**Why not chosen**: KubeVirt uses Prow/Tide for merge management, not GitHub's native merge buttons.
-Branch protection rules would conflict with or duplicate Tide's role. Additionally, GitHub branch
-protection does not support conditional/time-based label requirements without external tooling.
+- **`require-matching-label` plugin**: A single approved-VEP requirement would incorrectly block critical
+  fixes and automation. An equivalent policy needs all alternative routes plus blocking-label integration.
+- **Global merge blocker**: Blocks eligible work as well as ordinary work; unsuitable for a selective freeze.
+- **Manual enforcement alone**: Leaves policy discovery and consistency to individual reviewers.
+- **GitHub branch protection**: Does not natively express this time-dependent alternative-label policy;
+  duplicating Tide's merge decision adds another mechanism to maintain.
 
 ## Scalability
 
-This change has negligible scalability impact:
-
-- Tide already evaluates label requirements for every PR. Adding `approved-vep` to the required labels
-  list for one query does not meaningfully increase processing time.
-- The config change is a static YAML modification, not a new service or webhook.
-- The `approved-vep` label automation (GitHub Actions) already runs on every PR event and is unaffected.
+This policy uses existing Tide label evaluation, config deployment, and approved-VEP automation. It does
+not introduce a service or webhook. No additional label-reconciliation triggers or milestone automation
+are claimed as part of the baseline.
 
 ## Update/Rollback Compatibility
 
-- **Activation**: Submitting the freeze config PR takes effect as soon as it is merged and Tide resyncs
-  (within the configured `sync_period` of 2 minutes).
-- **Rollback**: Reverting the config PR immediately lifts the freeze. No state is lost, no PRs are
-  affected beyond their Tide merge status.
-- **No impact on existing PRs**: PRs that already have `approved-vep` continue to merge normally. PRs
-  without it simply cannot merge until the freeze is lifted or an exception is granted.
-- **No impact on release branches**: Only the `main` branch is gated. Release branch cherry-pick
-  workflows are unaffected.
+- Freeze/thaw changes take effect after successful config deployment and Tide reconciliation, not at PR creation.
+- Existing ordinary `main` PRs become ineligible at activation unless another route applies; eligible PRs
+  still need normal checks and reviews. Activation does not undo already merged changes.
+- Thaw restores ordinary `main` eligibility without changing release-branch workflows or removing specialized queries.
+- If rollback is needed, change the ordinary query's branch exclusion and verify deployment. Preserve unrelated
+  changes and coordinate any early thaw with the release team, especially if branching is incomplete.
 
 ## Functional Testing Approach
 
-- **Pre-merge validation**: The Tide config change can be validated by the existing Prow config
-  validation tooling (`checkconfig`) which runs on PRs to `kubevirt/project-infra`.
-- **Dry run**: Before the first real freeze, submit the config change as a PR and verify via Tide's
-  status reporting that PRs without `approved-vep` show "Not mergeable" while PRs with the label
-  remain mergeable. The PR can then be reverted without merging.
-- **Ongoing validation**: During each freeze cycle, the release team verifies that:
-  - PRs without `approved-vep` show a blocking Tide status on `main`.
-  - PRs with `approved-vep` merge normally on `main`.
-  - PRs on release branches are unaffected.
-  - Exception PRs with `freeze-exception` (if Option 2 is adopted) merge normally on `main`.
+For configuration changes, use project-infra's existing [check-prow-config presubmit][checkconfig], which
+runs Prow `checkconfig`. Syntax/config validation alone does not establish the intended admission policy.
+Evaluate the following cases against the candidate queries, with required checks passing and blocking
+labels absent unless a case states otherwise:
+
+| Case | Freeze | Thaw |
+| --- | --- | --- |
+| Human PR to `main`, `lgtm` + `approved` only | Ineligible | Eligible |
+| Same, plus `approved-vep` | Eligible | Eligible |
+| Same, plus `kind/bug` + `priority/critical-urgent` | Eligible | Eligible |
+| Same, plus `kind/flake` + `priority/critical-urgent` | Eligible | Eligible |
+| Same, plus only `kind/bug`, only `kind/flake`, or only critical urgency | Ineligible | Eligible |
+| Same, plus `kind/failing-test` + critical urgency only | Ineligible | Eligible |
+| Enhancement/critical-fix route missing `lgtm` or `approved`, no other route | Ineligible | Ineligible |
+| Otherwise eligible human PR with any configured blocking label | Ineligible | Ineligible |
+| Release-branch PR, `lgtm` + `approved` | Eligible | Eligible |
+| `kubevirt-bot` PR with `skip-review`, no bot-route blocker | Eligible | Eligible |
+| Human PR with `skip-review` only | Ineligible | Ineligible |
+
+Verify the bot route's distinct blocking-label list, unchanged rules in other repositories, and priority
+ordering separately. Include failure cases for accidental broad `main` queries and for a thaw that leaves
+the exclusion enabled.
+
+An unmerged config PR does not change production Tide behavior. Use isolated query evaluation or a test
+deployment for pre-merge behavioral checks; do not call an unmerged PR a production dry run. After deployment,
+inspect representative existing PRs/Tide status to confirm the matrix without merging dummy changes. Record
+activation/thaw evidence and investigate config-updater or reconciliation failures before declaring completion.
 
 ## Implementation History
 
-<!--
-To be updated as implementation progresses.
--->
+Dates below are config-PR merge dates, not measured live-cluster activation times.
+
+| Date | Change |
+| --- | --- |
+| June 22, 2026 | [#5170](https://github.com/kubevirt/project-infra/pull/5170): Added approved-VEP priority. |
+| June 24, 2026 | [#5194](https://github.com/kubevirt/project-infra/pull/5194): Required approved-VEP eligibility initially without branch scoping. |
+| June 25, 2026 | [#5197](https://github.com/kubevirt/project-infra/pull/5197): Scoped the gate to `main`, restoring release-branch merging. |
+| June 25, 2026 | [#5198](https://github.com/kubevirt/project-infra/pull/5198): Admitted critical-urgent bug fixes. |
+| July 2, 2026 | [#5214][thaw-19]: Lifted the v1.9 freeze using the ordinary query's branch exclusion. |
+| October 22, 2026 | [#5529][freeze-110]: Activated the v1.10 freeze using the same switch. |
+| October 26, 2026 | [#5560](https://github.com/kubevirt/project-infra/pull/5560): Admitted critical-urgent flake fixes. |
+
+As of October 27, [v1.10 thaw #5553][thaw-110] is open and unmerged. The separate
+[VEP merge-pool proposal #5193][merge-pool] was closed unmerged and is not part of the implementation.
 
 ## Graduation Requirements
 
-### Alpha
+This is a single-step release-process enhancement, not an API feature requiring Alpha/Beta/GA stages.
+The merge history establishes implementation of the core mechanism; completion of the VEP additionally requires:
 
-- [ ] Tide query split documented and validated via dry-run PR to `kubevirt/project-infra`
-- [ ] `freeze-exception` label created in `kubevirt/project-infra` labels configuration
-- [ ] `freeze-exception` label restricted to `restricted-labels-kubevirt` team
-- [ ] Release tracker template in `kubevirt/sig-release` updated with freeze/thaw checklist items
-- [ ] First code freeze enforced using the Tide query split for one release cycle
-- [ ] Feedback collected from release team, VEP owners, and contributors
+- [ ] Agreement on the documented eligibility rules, scope, priority distinction, and bot route.
+- [ ] Resolution of extension requirements, exception authority, technical routes, and label-access policy.
+- [ ] Explicit disposition of milestone attribution/gating and critical failing-test admission.
+- [ ] Release tracker/schedules aligned on freeze duration, branching prerequisites, and thaw ordering.
+- [ ] Contributor documentation for blocked PRs, label recovery, and exceptions.
+- [ ] Config validation and recorded behavioral verification of the eligibility matrix at activation and thaw.
+- [ ] Release-team, SIG, and contributor feedback reviewed, with remaining process gaps tracked.
 
-### Beta
-
-- [ ] Process refined based on Alpha feedback
-- [ ] Freeze/thaw config change templated or scripted for easy application by the release team
-- [ ] Documentation added to `kubevirt/community` contributor guide
-
-### GA
-
-- [ ] Process used successfully for at least two consecutive release cycles
-- [ ] No unresolved issues or process gaps reported
-- [ ] Exception process validated and documented
+[tide-config]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/config/config.yaml#L319-L423
+[tide-priority]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/config/config.yaml#L437-L441
+[config-updater]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/plugins/plugins.yaml#L776-L783
+[restricted-labels]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/plugins/plugins.yaml#L814-L847
+[vep-workflow]: https://github.com/kubevirt/kubevirt/blob/b738a3394897411693838b02ae4d17a7ddafc509/.github/workflows/label_approved_veps.yaml
+[vep-script]: https://github.com/kubevirt/kubevirt/blob/b738a3394897411693838b02ae4d17a7ddafc509/automation/label-approved-veps.py
+[schedule-110]: https://github.com/kubevirt/sig-release/blob/fb9ee285f5efba8d163f13000c686f47d13bd6bb/releases/v1.10/schedule.md
+[release-tracker]: https://github.com/kubevirt/sig-release/blob/fb9ee285f5efba8d163f13000c686f47d13bd6bb/.github/ISSUE_TEMPLATE/release-tracker.md#L57-L67
+[exceptions]: https://github.com/kubevirt/enhancements/blob/main/README.md#exceptions
+[freeze-110]: https://github.com/kubevirt/project-infra/pull/5529
+[thaw-110]: https://github.com/kubevirt/project-infra/pull/5553
+[thaw-19]: https://github.com/kubevirt/project-infra/pull/5214
+[merge-pool]: https://github.com/kubevirt/project-infra/pull/5193
+[checkconfig]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/files/jobs/kubevirt/project-infra/project-infra-presubmits.yaml
