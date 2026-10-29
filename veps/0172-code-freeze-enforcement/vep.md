@@ -13,7 +13,9 @@ Items marked with (R) are required *prior to targeting to a milestone / release*
 
 This VEP codifies a selective code freeze for `kubevirt/kubevirt`: during the freeze, Tide requires a
 specific set of labels for merging PRs into `main`. Eligible work includes tracked enhancements,
-critical-urgent bug fixes, and critical-urgent flake fixes. Release branches are not subject to this gate.
+critical-urgent bug fixes, and critical-urgent flake fixes. The implemented gate targets `main`; this VEP
+also proposes temporarily excluding the next expected release branch from ordinary merging until thaw.
+Older release branches remain unaffected.
 
 The core mechanism has already been implemented in `kubevirt/project-infra`. This draft describes the
 [merged configuration as of October 27, 2026][tide-config], reconciles the proposal with that implementation,
@@ -34,6 +36,7 @@ review and test the same change on both `main` and a release branch during that 
 
 - Document and enforce the implemented label-based eligibility rules for `main` during code freeze.
 - Provide an auditable config-PR mechanism for freeze activation and code thaw.
+- Protect the next expected release branch through the branching-to-thaw interval without freezing older releases.
 - Preserve dedicated paths for tracked enhancements and critical bug/flake fixes.
 - Explain release timing, label recovery, exception requests, and release-team responsibilities.
 - Distinguish implemented behavior from process improvements that still require agreement.
@@ -42,7 +45,7 @@ review and test the same change on both `main` and a release branch during that 
 
 - Changing VEP proposal, review, approval, or enhancement-freeze deadlines.
 - Replacing the existing [exception-request process][exceptions].
-- Blocking release branches or other repositories through this freeze policy.
+- Freezing older release branches or other repositories, or retaining the new release branch's exclusion after thaw.
 - Changing label automation or introducing milestone-based gating as part of the baseline implementation.
 - Stopping PR review or presubmit testing for work that cannot merge during the freeze.
 - Replacing normal CI, review, DCO, or blocking-label requirements.
@@ -75,7 +78,7 @@ review and test the same change on both `main` and a release branch during that 
 - [kubevirt/project-infra](https://github.com/kubevirt/project-infra): Implemented Tide queries and
   freeze/thaw switch; follow-up configuration changes only if additional policy is agreed.
 - [kubevirt/sig-release](https://github.com/kubevirt/sig-release): Release schedules and follow-up tracker
-  updates for the checklist described below.
+  updates for the checklist described below; proposed release-tool integration for the freeze configuration.
 - [kubevirt/enhancements](https://github.com/kubevirt/enhancements): This VEP and existing enhancement policy;
   follow-up alignment where current exception/deadline wording needs clarification.
 - [kubevirt/community](https://github.com/kubevirt/community): Follow-up contributor-guide documentation.
@@ -116,7 +119,9 @@ The bot route has the same exclusions except `do-not-merge/release-note-label-ne
 restriction is essential. Required CI checks still apply to eligible PRs.
 
 Neither `kind/bug`, `kind/flake`, nor `priority/critical-urgent` alone grants freeze admission. Other
-repositories and release branches retain their own merge requirements.
+repositories and release branches retain their own merge requirements in this implementation snapshot.
+The proposed next-release-branch exclusion below changes only the upcoming release branch's eligibility
+during freeze; it was not implemented by the release-branch presubmit PR.
 
 ### Freeze Activation and Code Thaw
 
@@ -139,8 +144,50 @@ For thaw, remove or comment out `excludedBranches` on this query, allowing the o
 `main` again. Keep the dedicated enhancement and critical-fix queries. The [v1.9 thaw][thaw-19] used this
 approach; the [v1.10 thaw PR][thaw-110] is still unmerged as of this draft's snapshot.
 
+### Proposed Next-Release-Branch Protection
+
+In the [release-1.10 presubmit configuration PR #5573][release-config-110], merged October 29, 2026,
+[follow-up feedback][next-branch-feedback] proposed adding the next expected release branch to the same
+exclusion when activating each freeze. For example, when starting the v1.11 freeze:
+
+```yaml
+# Fragment of the ordinary query during the proposed v1.11 freeze.
+repos:
+  - kubevirt/kubevirt
+excludedBranches:
+  - main
+  - release-1.11
+labels:
+  - lgtm
+  - approved
+```
+
+Use literal branch names: [Tide turns these entries][tide-query] into GitHub `base` search qualifiers, not regular
+expressions. Do not use `^release-1.11$` or a wildcard covering all release branches. Replace the previous
+cycle's branch entry at each activation rather than accumulating exclusions for older releases.
+
+Prepare and deploy the exclusion before the new branch is created, or before PRs can merge into it if it
+already exists. This closes the ordinary merge route during the interval between branching and verified
+thaw. The [release-tool suggestion][freeze-tool-feedback] is to generate the updated exclusion alongside
+the release configuration changes in one project-infra PR. This automation is proposed, not implemented
+by #5573, which added/updated presubmit jobs rather than Tide queries.
+
+With the existing dedicated queries still restricted to `main`, this proposal blocks all human-authored
+PRs from Tide on the upcoming release branch until thaw, even if they carry `approved-vep` or critical-fix
+labels. Selective admission on `main` is unchanged. The independent `kubevirt-bot`/`skip-review` route
+remains available on both branches, subject to its existing checks and blockers. Older release branches
+retain ordinary merging. These are Tide eligibility rules, not a guarantee against manual/admin merges.
+
+At thaw, remove or comment out the entire `excludedBranches` mapping and both entries, restoring ordinary
+merging on `main` and the new release branch. Freeze activates/uncomments the section; thaw
+deactivates/comments it out. If critical fixes must merge to the new branch before thaw, extending the
+dedicated queries to that branch requires an explicit policy/configuration change; labels alone cannot do it.
+
+### Deployment Verification
+
 Do not blindly revert all changes made during the freeze: later fixes, such as critical-flake admission,
-must not be lost. Also check that no other broad query admits ordinary `main` PRs while freeze is active.
+must not be lost. Also check that no other broad query admits ordinary PRs on either excluded branch
+while freeze is active.
 
 Merged config is deployed through the existing [config-updater mapping][config-updater]. Tide's configured
 sync period is two minutes, but deployment and reconciliation take time; this is not a guaranteed
@@ -157,7 +204,8 @@ The v1.10 schedule groups release-branch creation, `rc.0`, and restored normal m
 This VEP proposes making the operational ordering explicit: create and verify the release branch and its
 required CI configuration before lifting the gate on `main`. The release team should record the branch
 point and RC tag, then verify thaw. This ordering is a proposed checklist requirement, not a claim that
-the schedule already specifies it precisely.
+the schedule already specifies it precisely. Under the next-release-branch proposal, keep the new branch
+excluded from ordinary Tide merging throughout this preparation, then thaw both branches together.
 
 The generic [release tracker][release-tracker] still places branching and `rc.0` under Code Freeze and
 has no separate thaw milestone. Align it with the release-specific schedule rather than maintaining
@@ -241,17 +289,21 @@ Apply this proposed checklist to `kubevirt/sig-release` in a follow-up change:
 
 ```markdown
 ### Code Freeze
+
 - [ ] Publish the freeze/thaw window and eligibility/exception instructions.
 - [ ] Confirm enhancement tracking and coordinate required extensions with owning SIGs.
-- [ ] Enable the ordinary Tide query's main exclusion through a project-infra PR.
+- [ ] Enable the ordinary query's exclusions for main and the next expected release branch in a project-infra PR.
+- [ ] Replace the previous cycle's branch entry; use literal names and deploy before the new branch admits PRs.
+- [ ] Where supported, generate the exclusions and release configuration together using the release tool.
 - [ ] Validate deployment and the eligibility matrix; record actual activation and announce freeze.
 - [ ] Monitor critical fixes, labeling failures, and linked exception requests/decisions.
 
 ### Code Thaw
+
 - [ ] Confirm the release branch point and create/verify the branch and its CI configuration.
 - [ ] Record the release branch and rc.0 tag according to the release schedule.
-- [ ] Remove/comment the ordinary query's main exclusion without reverting intervening policy fixes.
-- [ ] Verify deployment, ordinary main eligibility, and unchanged release-branch behavior.
+- [ ] Remove/comment the whole exclusion mapping for both main and the new release branch; preserve policy fixes.
+- [ ] Verify restored ordinary eligibility on both branches and unaffected older release branches.
 - [ ] Record actual thaw, announce it, and collect process feedback.
 ```
 
@@ -312,8 +364,10 @@ are claimed as part of the baseline.
 - Freeze/thaw changes take effect after successful config deployment and Tide reconciliation, not at PR creation.
 - Existing ordinary `main` PRs become ineligible at activation unless another route applies; eligible PRs
   still need normal checks and reviews. Activation does not undo already merged changes.
-- Thaw restores ordinary `main` eligibility without changing release-branch workflows or removing specialized queries.
-- If rollback is needed, change the ordinary query's branch exclusion and verify deployment. Preserve unrelated
+- The next-release-branch proposal adds a temporary human-PR merge block on that branch; older release
+  branches and the existing bot route remain unaffected. It does not extend the main-only exception queries.
+- Thaw restores ordinary eligibility on both excluded branches without removing specialized queries.
+- If rollback is needed, change the ordinary query's branch exclusions and verify deployment. Preserve unrelated
   changes and coordinate any early thaw with the release team, especially if branching is incomplete.
 
 ## Functional Testing Approach
@@ -323,23 +377,37 @@ runs Prow `checkconfig`. Syntax/config validation alone does not establish the i
 Evaluate the following cases against the candidate queries, with required checks passing and blocking
 labels absent unless a case states otherwise:
 
-| Case | Freeze | Thaw |
-| --- | --- | --- |
-| Human PR to `main`, `lgtm` + `approved` only | Ineligible | Eligible |
-| Same, plus `approved-vep` | Eligible | Eligible |
-| Same, plus `kind/bug` + `priority/critical-urgent` | Eligible | Eligible |
-| Same, plus `kind/flake` + `priority/critical-urgent` | Eligible | Eligible |
-| Same, plus only `kind/bug`, only `kind/flake`, or only critical urgency | Ineligible | Eligible |
-| Same, plus `kind/failing-test` + critical urgency only | Ineligible | Eligible |
+| Case                                                                        | Freeze     | Thaw       |
+|-----------------------------------------------------------------------------|------------|------------|
+| Human PR to `main`, `lgtm` + `approved` only                                | Ineligible | Eligible   |
+| Same, plus `approved-vep`                                                   | Eligible   | Eligible   |
+| Same, plus `kind/bug` + `priority/critical-urgent`                          | Eligible   | Eligible   |
+| Same, plus `kind/flake` + `priority/critical-urgent`                        | Eligible   | Eligible   |
+| Same, plus only `kind/bug`, only `kind/flake`, or only critical urgency     | Ineligible | Eligible   |
+| Same, plus `kind/failing-test` + critical urgency only                      | Ineligible | Eligible   |
 | Enhancement/critical-fix route missing `lgtm` or `approved`, no other route | Ineligible | Ineligible |
-| Otherwise eligible human PR with any configured blocking label | Ineligible | Ineligible |
-| Release-branch PR, `lgtm` + `approved` | Eligible | Eligible |
-| `kubevirt-bot` PR with `skip-review`, no bot-route blocker | Eligible | Eligible |
-| Human PR with `skip-review` only | Ineligible | Ineligible |
+| Otherwise eligible human PR with any configured blocking label              | Ineligible | Ineligible |
+| Release-branch PR, `lgtm` + `approved`                                      | Eligible   | Eligible   |
+| `kubevirt-bot` PR with `skip-review`, no bot-route blocker                  | Eligible   | Eligible   |
+| Human PR with `skip-review` only                                            | Ineligible | Ineligible |
 
 Verify the bot route's distinct blocking-label list, unchanged rules in other repositories, and priority
 ordering separately. Include failure cases for accidental broad `main` queries and for a thaw that leaves
 the exclusion enabled.
+
+For the proposed next-release-branch protection, additionally evaluate:
+
+| Case                                                                          | Freeze     | Thaw     |
+|-------------------------------------------------------------------------------|------------|----------|
+| Human PR to next release branch, `lgtm` + `approved`                          | Ineligible | Eligible |
+| Same, plus `approved-vep` or a critical bug/flake label combination           | Ineligible | Eligible |
+| Human PR to an older release branch, `lgtm` + `approved`                      | Eligible   | Eligible |
+| `kubevirt-bot` PR to next release branch, `skip-review`, no bot-route blocker | Eligible   | Eligible |
+
+Verify the intended branch name is updated each cycle, works once the branch exists, and is not interpreted
+as a regex. Test the branch before and after thaw, including a stale release-branch exclusion left active
+while `main` is thawed, an accidentally retained older branch, and any alternative query bypassing the
+exclusion. Validate generated release-tool output if that follow-up automation is implemented.
 
 An unmerged config PR does not change production Tide behavior. Use isolated query evaluation or a test
 deployment for pre-merge behavioral checks; do not call an unmerged PR a production dry run. After deployment,
@@ -350,18 +418,22 @@ activation/thaw evidence and investigate config-updater or reconciliation failur
 
 Dates below are config-PR merge dates, not measured live-cluster activation times.
 
-| Date | Change |
-| --- | --- |
-| June 22, 2026 | [#5170](https://github.com/kubevirt/project-infra/pull/5170): Added approved-VEP priority. |
-| June 24, 2026 | [#5194](https://github.com/kubevirt/project-infra/pull/5194): Required approved-VEP eligibility initially without branch scoping. |
-| June 25, 2026 | [#5197](https://github.com/kubevirt/project-infra/pull/5197): Scoped the gate to `main`, restoring release-branch merging. |
-| June 25, 2026 | [#5198](https://github.com/kubevirt/project-infra/pull/5198): Admitted critical-urgent bug fixes. |
-| July 2, 2026 | [#5214][thaw-19]: Lifted the v1.9 freeze using the ordinary query's branch exclusion. |
-| October 22, 2026 | [#5529][freeze-110]: Activated the v1.10 freeze using the same switch. |
-| October 26, 2026 | [#5560](https://github.com/kubevirt/project-infra/pull/5560): Admitted critical-urgent flake fixes. |
+| Date             | Change                                                                                                                            |
+|------------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| June 22, 2026    | [#5170](https://github.com/kubevirt/project-infra/pull/5170): Added approved-VEP priority.                                        |
+| June 24, 2026    | [#5194](https://github.com/kubevirt/project-infra/pull/5194): Required approved-VEP eligibility initially without branch scoping. |
+| June 25, 2026    | [#5197](https://github.com/kubevirt/project-infra/pull/5197): Scoped the gate to `main`, restoring release-branch merging.        |
+| June 25, 2026    | [#5198](https://github.com/kubevirt/project-infra/pull/5198): Admitted critical-urgent bug fixes.                                 |
+| July 2, 2026     | [#5214][thaw-19]: Lifted the v1.9 freeze using the ordinary query's branch exclusion.                                             |
+| October 22, 2026 | [#5529][freeze-110]: Activated the v1.10 freeze using the same switch.                                                            |
+| October 26, 2026 | [#5560](https://github.com/kubevirt/project-infra/pull/5560): Admitted critical-urgent flake fixes.                               |
 
 As of October 27, [v1.10 thaw #5553][thaw-110] is open and unmerged. The separate
 [VEP merge-pool proposal #5193][merge-pool] was closed unmerged and is not part of the implementation.
+
+On October 29, [#5573][release-config-110] merged release-1.10 presubmit configuration. Its discussion
+motivated the next-release-branch exclusion and release-tool proposals above; neither Tide protection
+nor that automation was implemented by this PR.
 
 ## Graduation Requirements
 
@@ -372,21 +444,43 @@ The merge history establishes implementation of the core mechanism; completion o
 - [ ] Resolution of extension requirements, exception authority, technical routes, and label-access policy.
 - [ ] Explicit disposition of milestone attribution/gating and critical failing-test admission.
 - [ ] Release tracker/schedules aligned on freeze duration, branching prerequisites, and thaw ordering.
+- [ ] Next-release-branch exclusion validated across activation, branch creation, and thaw; older releases unaffected.
 - [ ] Contributor documentation for blocked PRs, label recovery, and exceptions.
 - [ ] Config validation and recorded behavioral verification of the eligibility matrix at activation and thaw.
 - [ ] Release-team, SIG, and contributor feedback reviewed, with remaining process gaps tracked.
 
 [tide-config]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/config/config.yaml#L319-L423
+
 [tide-priority]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/config/config.yaml#L437-L441
+
 [config-updater]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/plugins/plugins.yaml#L776-L783
+
 [restricted-labels]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/kustom/base/configs/current/plugins/plugins.yaml#L814-L847
+
 [vep-workflow]: https://github.com/kubevirt/kubevirt/blob/b738a3394897411693838b02ae4d17a7ddafc509/.github/workflows/label_approved_veps.yaml
+
 [vep-script]: https://github.com/kubevirt/kubevirt/blob/b738a3394897411693838b02ae4d17a7ddafc509/automation/label-approved-veps.py
+
 [schedule-110]: https://github.com/kubevirt/sig-release/blob/fb9ee285f5efba8d163f13000c686f47d13bd6bb/releases/v1.10/schedule.md
+
 [release-tracker]: https://github.com/kubevirt/sig-release/blob/fb9ee285f5efba8d163f13000c686f47d13bd6bb/.github/ISSUE_TEMPLATE/release-tracker.md#L57-L67
+
 [exceptions]: https://github.com/kubevirt/enhancements/blob/main/README.md#exceptions
+
 [freeze-110]: https://github.com/kubevirt/project-infra/pull/5529
+
 [thaw-110]: https://github.com/kubevirt/project-infra/pull/5553
+
 [thaw-19]: https://github.com/kubevirt/project-infra/pull/5214
+
 [merge-pool]: https://github.com/kubevirt/project-infra/pull/5193
+
 [checkconfig]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/github/ci/prow-deploy/files/jobs/kubevirt/project-infra/project-infra-presubmits.yaml
+
+[release-config-110]: https://github.com/kubevirt/project-infra/pull/5573
+
+[next-branch-feedback]: https://github.com/kubevirt/project-infra/pull/5573#issuecomment-6493022900
+
+[freeze-tool-feedback]: https://github.com/kubevirt/project-infra/pull/5573#issuecomment-6492809234
+
+[tide-query]: https://github.com/kubevirt/project-infra/blob/e979fcbbce0e0822e87553a82b84d34165781295/vendor/sigs.k8s.io/prow/pkg/config/tide.go#L620-L625
